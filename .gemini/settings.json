@@ -1,0 +1,16 @@
+{
+  "commandExecution": {
+    "enabled": true,
+    "allowlist": [
+      "go",
+      "go run",
+      "go build",
+      "go test",
+      "go test ./...",
+      "go vet",
+      "go fmt",
+      "git add",
+      "git commit"
+    ]
+  }
+}
