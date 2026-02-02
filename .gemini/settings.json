@@ -9,6 +9,7 @@
       "go test ./...",
       "go vet",
       "go fmt",
+      "git status",
       "git add",
       "git commit"
     ]
