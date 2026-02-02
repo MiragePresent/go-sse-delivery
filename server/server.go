@@ -7,7 +7,22 @@ import (
 	"sync"
 )
 
+type Config struct {
+	Port     string
+	SSEPath  string
+	PostPath string
+}
+
+func DefaultConfig() Config {
+	return Config{
+		Port:     ":8080",
+		SSEPath:  "/live-updates",
+		PostPath: "/events",
+	}
+}
+
 type Server struct {
+	config     Config
 	clients    map[chan string]bool
 	register   chan chan string
 	unregister chan chan string
@@ -15,8 +30,9 @@ type Server struct {
 	mu         sync.RWMutex
 }
 
-func NewServer() *Server {
+func NewServer(config Config) *Server {
 	return &Server{
+		config:     config,
 		clients:    make(map[chan string]bool),
 		register:   make(chan chan string),
 		unregister: make(chan chan string),
@@ -27,11 +43,11 @@ func NewServer() *Server {
 func (s *Server) Start() {
 	go s.run()
 
-	http.HandleFunc("GET /events", s.sseHandler)
-	http.HandleFunc("POST /events", s.postEventHandler)
+	http.HandleFunc("GET "+s.config.SSEPath, s.sseHandler)
+	http.HandleFunc("POST "+s.config.PostPath, s.postEventHandler)
 
-	fmt.Println("Server starting on :8080")
-	http.ListenAndServe(":8080", nil)
+	fmt.Printf("Server starting on %s\n", s.config.Port)
+	http.ListenAndServe(s.config.Port, nil)
 }
 
 func (s *Server) run() {
