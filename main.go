@@ -1,7 +1,8 @@
 package main
 
-import "fmt"
+import "github.com/miragepresent/go-sse-delivery/server"
 
 func main() {
-	fmt.Println("Go-SSE-Delivery is a tool that creates a SSE endpoint for events delivery from backend")
+	srv := server.NewServer()
+	srv.Start()
 }
