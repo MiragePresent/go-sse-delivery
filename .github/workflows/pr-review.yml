@@ -1,0 +1,85 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number to review'
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER=${{ inputs.pr_number || github.event.pull_request.number }}
+          gh pr diff $PR_NUMBER > pr_diff.txt
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+
+      - name: Review with Claude
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          DIFF=$(cat pr_diff.txt)
+
+          # Truncate diff if too large (max ~50k chars for context)
+          if [ ${#DIFF} -gt 50000 ]; then
+            DIFF="${DIFF:0:50000}... [truncated]"
+          fi
+
+          # Escape for JSON
+          DIFF_ESCAPED=$(echo "$DIFF" | jq -Rsa .)
+
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -d @- <<PAYLOAD
+          {
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 4096,
+            "messages": [
+              {
+                "role": "user",
+                "content": "You are a code reviewer for a Go project (go-sse-delivery - an SSE message delivery package). Review this pull request diff and provide constructive feedback.\n\nFocus on:\n- Bugs or potential issues\n- Security concerns\n- Performance improvements\n- Code style and Go best practices\n- Test coverage suggestions\n\nBe concise and actionable. If the code looks good, say so briefly.\n\nDiff:\n${DIFF_ESCAPED}"
+              }
+            ]
+          }
+          PAYLOAD
+          )
+
+          # Extract the review text
+          REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text // "Failed to get review from Claude."')
+
+          # Save to file for the next step
+          echo "$REVIEW" > review.txt
+
+      - name: Post review comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER=${{ steps.diff.outputs.pr_number }}
+          REVIEW=$(cat review.txt)
+
+          gh pr comment $PR_NUMBER --body "## 🤖 AI Code Review
+
+          $REVIEW
+
+          ---
+          *Reviewed by Claude (Anthropic)*"
