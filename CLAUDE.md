@@ -48,4 +48,4 @@ Events are delivered through a channel-based architecture:
 
 - [x] Create server module with SSE endpoint and POST events endpoint
 - [x] Add server configurations (port, endpoint paths for sending/receiving events)
-- [ ] Create messaging module (message structure, channels, etc.)
+- [x] Create messaging module (message structure, channels, etc.)
