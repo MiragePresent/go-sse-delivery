@@ -1,24 +1,27 @@
 package messaging
 
+import "log"
+
 type Processor struct {
-	storage EventsStorage
-	queue   UpdatesQueue
+	ingress chan *Event
+	updates chan *Update
 	handler Handler
 }
 
-func NewProcessor(storage EventsStorage, queue UpdatesQueue, handler Handler) *Processor {
+func NewProcessor(ingress chan *Event, updates chan *Update, handler Handler) *Processor {
 	return &Processor{
-		storage: storage,
-		queue:   queue,
+		ingress: ingress,
+		updates: updates,
 		handler: handler,
 	}
 }
 
-func (p *Processor) Run() {
-	for event := range p.storage.Pop() {
+func (p *Processor) Process() {
+	for event := range p.ingress {
+		log.Printf("Processing event: senderId=%s, eventType=%s", event.SenderID, event.EventType)
 		update := p.handler.Handle(event)
 		if update != nil {
-			p.queue.Send(update)
+			p.updates <- update
 		}
 	}
 }
