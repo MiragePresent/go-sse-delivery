@@ -1,5 +1,9 @@
 # go-sse-delivery
 
+[![Tests](https://github.com/miragepresent/go-sse-delivery/actions/workflows/test.yml/badge.svg)](https://github.com/miragepresent/go-sse-delivery/actions/workflows/test.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/miragepresent/go-sse-delivery.svg)](https://pkg.go.dev/github.com/miragepresent/go-sse-delivery)
+[![Version](https://img.shields.io/badge/version-v0.0.1--alpha-blue)](https://github.com/miragepresent/go-sse-delivery/releases/tag/v0.0.1-alpha)
+
 A Go package for simplified Server-Sent Events (SSE) message delivery.
 
 ## Installation
