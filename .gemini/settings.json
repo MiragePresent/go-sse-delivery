@@ -1,9 +1,0 @@
-{
-  "tools": {
-    "defaultApprovalMode": "auto_edit",
-    "allowedCommands": [
-      "go",
-      "git"
-    ]
-  }
-}
