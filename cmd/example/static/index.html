@@ -119,19 +119,21 @@
         <h1>SSE Delivery Demo</h1>
         <div class="panels">
             <div class="panel">
-                <h2>Send Events</h2>
+                <h2>Send Messages</h2>
                 <div class="sender-form">
                     <input type="text" id="senderId" placeholder="Sender ID" value="user-1">
-                    <select id="eventType">
+                    <select id="type">
                         <option value="message">message</option>
                         <option value="notification">notification</option>
                         <option value="alert">alert</option>
                     </select>
-                    <button onclick="generateAndSend()">Generate Random Message</button>
+                    <button onclick="generateAndSend()">Send Random Message</button>
+                    <h2>Debug</h2>
                     <div class="preview">
                         <strong>Last sent:</strong>
                         <div id="lastSent">Nothing sent yet</div>
                     </div>
+                    <button onclick="window.open('/demo', '_blank')">Add client</button>
                 </div>
             </div>
             <div class="panel">
@@ -214,25 +216,25 @@
         }
 
         async function generateAndSend() {
-            const senderId = document.getElementById('senderId').value || 'anonymous';
-            const eventType = document.getElementById('eventType').value;
+            const senderId = clientID;
+            const type = document.getElementById('type').value;
             const data = randomSentence();
 
-            const event = {
+            const message = {
                 senderId: senderId,
-                eventType: eventType,
+                type: type,
                 data: data
             };
 
             try {
-                const response = await fetch('/events', {
+                const response = await fetch('/signals', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'SSE-Client-ID': clientID },
-                    body: JSON.stringify(event)
+                    body: JSON.stringify(message)
                 });
 
                 if (response.ok) {
-                    document.getElementById('lastSent').textContent = JSON.stringify(event, null, 2);
+                    document.getElementById('lastSent').textContent = JSON.stringify(message, null, 2);
                 } else {
                     const error = await response.json();
                     document.getElementById('lastSent').textContent = `Error: ${error.error}`;
