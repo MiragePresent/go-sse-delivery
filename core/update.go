@@ -2,8 +2,17 @@ package core
 
 import "encoding/json"
 
+type DeliveryMode int
+
+const (
+	Broadcast DeliveryMode = 0
+	Targeted  DeliveryMode = 1
+)
+
 type Update struct {
-	Data interface{}
+	Data        interface{}
+	Mode        DeliveryMode
+	Connections []string
 }
 
 func (u *Update) Stringify() string {

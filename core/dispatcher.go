@@ -28,7 +28,7 @@ func (d *Dispatcher) Register(signalType string, handler Handler) {
 
 func (d *Dispatcher) Run() {
 	for signal := range d.ingress {
-		log.Printf("Dispatching signal: senderId=%s, type=%s", signal.SenderID, signal.Type)
+		log.Printf("Dispatching signal: connectionId=%s, type=%s", signal.ConnectionID, signal.Type)
 		h := d.getHandler(signal.Type)
 		if h == nil {
 			log.Printf("no handler found for signal type %s\n", signal.Type)

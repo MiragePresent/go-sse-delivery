@@ -10,19 +10,47 @@ import (
 	"github.com/miragepresent/go-sse-delivery/identity"
 )
 
-// Individual SSE client connection
-type client struct {
-	clientId string
-	send     chan string
+type connection struct {
+	connectionID string
+	send         chan string
 }
 
 type HttpHandler struct {
-	clients        map[*client]bool
-	connected      chan *client
-	disconnected   chan *client
-	updates        <-chan *core.Update
-	clientResolver identity.ClientIdResolver
-	mu             sync.RWMutex
+	connections           map[string]*connection
+	connected             chan *connection
+	disconnected          chan *connection
+	updates               <-chan *core.Update
+	connectionIDResolver  identity.ConnectionIDResolver
+	connectionIDGenerator identity.ConnectionIDGenerator
+	mu                    sync.RWMutex
+}
+
+func NewCustomSseHandler(
+	updates <-chan *core.Update,
+	generator identity.ConnectionIDGenerator,
+	resolver identity.ConnectionIDResolver,
+) *HttpHandler {
+	h := &HttpHandler{
+		connections:           make(map[string]*connection),
+		connected:             make(chan *connection),
+		disconnected:          make(chan *connection),
+		updates:               updates,
+		connectionIDGenerator: generator,
+		connectionIDResolver:  resolver,
+		mu:                    sync.RWMutex{},
+	}
+
+	go h.manageConnections()
+
+	return h
+}
+
+func NewSseHandler(updates <-chan *core.Update) *HttpHandler {
+	return NewCustomSseHandler(
+		updates,
+		identity.DefaultConnectionIDGenerator,
+		identity.DefaultConnectionIDResolver,
+	)
 }
 
 func (h *HttpHandler) manageConnections() {
@@ -31,46 +59,27 @@ func (h *HttpHandler) manageConnections() {
 		select {
 		case conn := <-h.connected:
 			h.mu.Lock()
-			log.Printf("client %s connected. number of connections: %d\n", conn.clientId, len(h.clients)+1)
-			h.clients[conn] = true
+			log.Printf("connection %s established. total connections: %d\n", conn.connectionID, len(h.connections)+1)
+			h.connections[conn.connectionID] = conn
 			h.mu.Unlock()
 		case disconn := <-h.disconnected:
 			h.mu.Lock()
-			log.Printf("client %s disconnected. number of connections: %d\n", disconn.clientId, len(h.clients)-1)
-			delete(h.clients, disconn)
+			log.Printf("connection %s closed. total connections: %d\n", disconn.connectionID, len(h.connections)-1)
+			delete(h.connections, disconn.connectionID)
 			close(disconn.send)
+			h.mu.Unlock()
 		case upd := <-h.updates:
-			h.mu.RLock()
-			cl := len(h.clients)
-			log.Printf("broadcasting new message to %d active client(s)", cl)
-			clientsPool := make([]*client, 0, cl)
-			for c := range h.clients {
-				clientsPool = append(clientsPool, c)
-			}
-			h.mu.RUnlock()
-
-			for _, c := range clientsPool {
-				select {
-				case c.send <- upd.Stringify():
-				default:
-					log.Printf("client %s is too slow (buffer is full). update will not be delivered", c.clientId)
-				}
+			switch upd.Mode {
+			case core.Broadcast:
+				h.broadcastUpdate(upd)
+			case core.Targeted:
+				h.sendToTarget(upd)
 			}
 		}
 	}
-
 }
 
 func (h *HttpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log.Printf("SSE endpoint got new connection\n")
-	clientId, err := h.clientResolver(r)
-
-	if err != nil || clientId == "" {
-		log.Printf("cannot identify client ID. ignoring the connection. Error: %s", err)
-		http.Error(w, "Unknown client ID. Disconnecting", http.StatusBadRequest)
-		return
-	}
-
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "SSE not supported", http.StatusInternalServerError)
@@ -82,42 +91,68 @@ func (h *HttpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	connection := &client{
-		clientId: clientId,
-		send:     make(chan string, 10),
+	connectionID := h.connectionIDResolver(r)
+	if connectionID == "" {
+		connectionID = h.connectionIDGenerator()
+		fmt.Fprintf(w, "event: connected\ndata: %s\n\n", connectionID)
+		flusher.Flush()
 	}
-	h.connected <- connection
+
+	log.Printf("SSE connection established: %s\n", connectionID)
+
+	conn := &connection{
+		connectionID: connectionID,
+		send:         make(chan string, 10),
+	}
+	h.connected <- conn
 
 	defer func() {
-		h.disconnected <- connection
+		h.disconnected <- conn
 	}()
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-
-	for msg := range connection.send {
-		fmt.Fprintf(w, "data: %s", msg)
+	for msg := range conn.send {
+		fmt.Fprintf(w, "data: %s\n\n", msg)
 		flusher.Flush()
 	}
 }
 
-func NewSseHandler(updates <-chan *core.Update) *HttpHandler {
-	return NewSseHandlerWithClientResolver(updates, identity.DefaultClientIdResolver)
+func (h *HttpHandler) broadcastUpdate(upd *core.Update) {
+	h.mu.RLock()
+	total := len(h.connections)
+	log.Printf("broadcasting update to %d connection(s)", total)
+	pool := make([]*connection, 0, total)
+	for _, conn := range h.connections {
+		pool = append(pool, conn)
+	}
+	h.mu.RUnlock()
+
+	for _, conn := range pool {
+		select {
+		case conn.send <- upd.Stringify():
+		default:
+			log.Printf("connection %s is too slow (buffer full). update dropped", conn.connectionID)
+		}
+	}
 }
 
-func NewSseHandlerWithClientResolver(updates <-chan *core.Update, resolver identity.ClientIdResolver) *HttpHandler {
-	h := &HttpHandler{
-		clients:        make(map[*client]bool),
-		connected:      make(chan *client),
-		disconnected:   make(chan *client),
-		updates:        updates,
-		clientResolver: resolver,
-		mu:             sync.RWMutex{},
+func (h *HttpHandler) sendToTarget(upd *core.Update) {
+	if len(upd.Connections) == 0 {
+		log.Printf("no connectionID specified for targeted update")
+		return
 	}
 
-	go h.manageConnections()
+	h.mu.RLock()
+	conn, ok := h.connections[upd.Connections[0]]
+	h.mu.RUnlock()
 
-	return h
+	if ok {
+		select {
+		case conn.send <- upd.Stringify():
+		default:
+			log.Printf("connection %s is too slow (buffer full). update dropped", conn.connectionID)
+		}
+		return
+	}
+
+	log.Printf("cannot send update to connection %s. connection closed", upd.Connections[0])
 }

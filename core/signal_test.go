@@ -14,29 +14,29 @@ func TestSignal_JSONMarshal(t *testing.T) {
 		{
 			name: "signal with string data",
 			signal: Signal{
-				SenderID: "client-1",
-				Type:     "message",
-				Data:     "hello world",
+				ConnectionID: "conn-1",
+				Type:         "message",
+				Data:         "hello world",
 			},
-			expected: `{"senderId":"client-1","type":"message","data":"hello world"}`,
+			expected: `{"connectionId":"conn-1","type":"message","data":"hello world"}`,
 		},
 		{
 			name: "signal with map data",
 			signal: Signal{
-				SenderID: "client-2",
-				Type:     "update",
-				Data:     map[string]string{"key": "value"},
+				ConnectionID: "conn-2",
+				Type:         "update",
+				Data:         map[string]string{"key": "value"},
 			},
-			expected: `{"senderId":"client-2","type":"update","data":{"key":"value"}}`,
+			expected: `{"connectionId":"conn-2","type":"update","data":{"key":"value"}}`,
 		},
 		{
 			name: "signal with empty fields",
 			signal: Signal{
-				SenderID: "",
-				Type:     "",
-				Data:     nil,
+				ConnectionID: "",
+				Type:         "",
+				Data:         nil,
 			},
-			expected: `{"senderId":"","type":"","data":null}`,
+			expected: `{"connectionId":"","type":"","data":null}`,
 		},
 	}
 
@@ -62,20 +62,20 @@ func TestSignal_JSONUnmarshal(t *testing.T) {
 	}{
 		{
 			name:  "valid signal with string data",
-			input: `{"senderId":"client-1","type":"message","data":"hello"}`,
+			input: `{"connectionId":"conn-1","type":"message","data":"hello"}`,
 			expected: Signal{
-				SenderID: "client-1",
-				Type:     "message",
-				Data:     "hello",
+				ConnectionID: "conn-1",
+				Type:         "message",
+				Data:         "hello",
 			},
 		},
 		{
 			name:  "valid signal with nested data",
-			input: `{"senderId":"client-2","type":"update","data":{"nested":"value"}}`,
+			input: `{"connectionId":"conn-2","type":"update","data":{"nested":"value"}}`,
 			expected: Signal{
-				SenderID: "client-2",
-				Type:     "update",
-				Data:     map[string]interface{}{"nested": "value"},
+				ConnectionID: "conn-2",
+				Type:         "update",
+				Data:         map[string]interface{}{"nested": "value"},
 			},
 		},
 		{
@@ -98,8 +98,8 @@ func TestSignal_JSONUnmarshal(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if signal.SenderID != tt.expected.SenderID {
-				t.Errorf("SenderID: got %s, want %s", signal.SenderID, tt.expected.SenderID)
+			if signal.ConnectionID != tt.expected.ConnectionID {
+				t.Errorf("ConnectionID: got %s, want %s", signal.ConnectionID, tt.expected.ConnectionID)
 			}
 			if signal.Type != tt.expected.Type {
 				t.Errorf("Type: got %s, want %s", signal.Type, tt.expected.Type)

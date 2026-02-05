@@ -10,18 +10,32 @@ import (
 )
 
 type SignalReceiver struct {
-	ingress        chan *core.Signal
-	clientResolver identity.ClientIdResolver
+	ingress               chan *core.Signal
+	connectionIDResolver  identity.ConnectionIDResolver
+	connectionIDGenerator identity.ConnectionIDGenerator
+}
+
+func NewSignalReceiver(ingress chan *core.Signal) *SignalReceiver {
+	return NewCustomSignalReceiver(
+		ingress,
+		identity.DefaultConnectionIDGenerator,
+		identity.DefaultConnectionIDResolver,
+	)
+}
+
+func NewCustomSignalReceiver(
+	ingress chan *core.Signal,
+	generator identity.ConnectionIDGenerator,
+	resolver identity.ConnectionIDResolver,
+) *SignalReceiver {
+	return &SignalReceiver{
+		ingress:               ingress,
+		connectionIDGenerator: generator,
+		connectionIDResolver:  resolver,
+	}
 }
 
 func (sr *SignalReceiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	clientID, err := sr.clientResolver(r)
-	if err != nil || clientID == "" {
-		log.Printf("cannot identify client ID. ignoring the signal. Error: %s", err)
-		http.Error(w, "Unknown client ID. Disconnecting", http.StatusBadRequest)
-		return
-	}
-
 	var signal core.Signal
 	if err := json.NewDecoder(r.Body).Decode(&signal); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -29,20 +43,23 @@ func (sr *SignalReceiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	signal.SenderID = clientID
+	connectionID := sr.connectionIDResolver(r)
+	if connectionID == "" {
+		connectionID = sr.connectionIDGenerator()
+		signal.ConnectionID = connectionID
 
-	log.Printf("Signal received: senderId=%s, type=%s, data=%v", signal.SenderID, signal.Type, signal.Data)
+		log.Printf("Signal received (new connection): connectionId=%s, type=%s, data=%v", signal.ConnectionID, signal.Type, signal.Data)
+		sr.ingress <- &signal
+
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(connectionID))
+		return
+	}
+
+	signal.ConnectionID = connectionID
+
+	log.Printf("Signal received: connectionId=%s, type=%s, data=%v", signal.ConnectionID, signal.Type, signal.Data)
 	sr.ingress <- &signal
 	w.WriteHeader(http.StatusAccepted)
-}
-
-func NewSignalReceiver(ingress chan *core.Signal) *SignalReceiver {
-	return NewSignalReceiverWithClientResolver(ingress, identity.DefaultClientIdResolver)
-}
-
-func NewSignalReceiverWithClientResolver(ingress chan *core.Signal, resolver identity.ClientIdResolver) *SignalReceiver {
-	return &SignalReceiver{
-		ingress:        ingress,
-		clientResolver: resolver,
-	}
 }
