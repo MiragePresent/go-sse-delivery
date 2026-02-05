@@ -5,34 +5,34 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/miragepresent/go-sse-delivery/messaging"
-	"github.com/miragepresent/go-sse-delivery/server"
+	"github.com/miragepresent/go-sse-delivery/core"
+	"github.com/miragepresent/go-sse-delivery/transport"
 )
 
 func main() {
-	debug := flag.Bool("debug", false, "Enable debug mode with test page at /debug/")
 	port := flag.String("port", ":8080", "Server port")
 	flag.Parse()
 
 	// Create channels
-	ingress := make(chan *messaging.Event, 100)
-	updates := make(chan *messaging.Update, 100)
+	ingress := make(chan *core.Signal, 100)
+	updates := make(chan *core.Update, 100)
 
-	// Create handlers and processor
-	handlers := server.NewHandlers(ingress, updates)
-	processor := messaging.NewProcessor(ingress, updates, &messaging.EchoHandler{})
+	// Create handlers and dispatcher
+	dispatcher := core.NewDispatcher(ingress, updates)
+	dispatcher.Register("message", &core.EchoHandler{})
+	dispatcher.Register("notification", &core.EchoHandler{})
+	dispatcher.Register("alert", &core.EchoHandler{})
+
+	signalReceiver := transport.NewSignalReceiver(ingress)
+	sseHandler := transport.NewSseHandler(updates)
 
 	// Start goroutines
-	go handlers.Run()
-	go processor.Process()
+	go dispatcher.Run()
 
 	// Setup routes
-	http.HandleFunc("GET /live-updates", handlers.DeliverEndpointHandler)
-	http.HandleFunc("POST /events", handlers.NewEventsHandler)
-
-	if *debug {
-		http.Handle("/debug/", http.StripPrefix("/debug/", http.FileServer(http.Dir("cmd/example/static"))))
-	}
+	http.Handle("POST /signals", signalReceiver)
+	http.Handle("GET /live-updates", sseHandler)
+	http.Handle("/demo/", http.StripPrefix("/demo/", http.FileServer(http.Dir("cmd/example/static"))))
 
 	fmt.Printf("Server starting on %s\n", *port)
 	http.ListenAndServe(*port, nil)

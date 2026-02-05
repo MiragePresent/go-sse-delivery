@@ -82,7 +82,7 @@
             flex-direction: column;
             gap: 15px;
         }
-        input, select {
+        select {
             padding: 12px;
             border: none;
             border-radius: 6px;
@@ -104,6 +104,10 @@
         button:hover {
             background: #00b8d9;
         }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
         .preview {
             background: #0f0f23;
             padding: 15px;
@@ -112,6 +116,12 @@
             font-size: 0.9rem;
             color: #888;
         }
+        .connection-id {
+            font-family: monospace;
+            font-size: 0.8rem;
+            color: #00d9ff;
+            word-break: break-all;
+        }
     </style>
 </head>
 <body>
@@ -119,26 +129,31 @@
         <h1>SSE Delivery Demo</h1>
         <div class="panels">
             <div class="panel">
-                <h2>Send Events</h2>
+                <h2>Send Signals</h2>
                 <div class="sender-form">
-                    <input type="text" id="senderId" placeholder="Sender ID" value="user-1">
-                    <select id="eventType">
+                    <select id="type">
                         <option value="message">message</option>
                         <option value="notification">notification</option>
                         <option value="alert">alert</option>
                     </select>
-                    <button onclick="generateAndSend()">Generate Random Message</button>
+                    <button id="sendBtn" onclick="sendSignal()" disabled>Send Random Signal</button>
+                    <h2>Debug</h2>
+                    <div class="preview">
+                        <strong>Connection ID:</strong>
+                        <div id="connectionInfo" class="connection-id">Waiting for connection...</div>
+                    </div>
                     <div class="preview">
                         <strong>Last sent:</strong>
                         <div id="lastSent">Nothing sent yet</div>
                     </div>
+                    <button onclick="window.open('/demo/', '_blank')">Open Another Client</button>
                 </div>
             </div>
             <div class="panel">
                 <h2>Received Updates</h2>
                 <div class="status">
                     <div class="status-dot" id="statusDot"></div>
-                    <span id="statusText">Disconnected</span>
+                    <span id="statusText">Connecting...</span>
                 </div>
                 <div class="messages" id="messages"></div>
             </div>
@@ -146,7 +161,8 @@
     </div>
 
     <script>
-        const clientID = "client-" + Math.ceil(Math.random() * 10000)
+        let connectionID = null;
+
         const subjects = ['The cat', 'A developer', 'The server', 'My coffee', 'The database', 'A wild bug', 'The user', 'Our deployment'];
         const verbs = ['is running', 'just exploded', 'needs attention', 'started dancing', 'went offline', 'is on fire', 'requires coffee', 'completed successfully'];
         const adverbs = ['frantically', 'mysteriously', 'unexpectedly', 'gracefully', 'loudly', 'silently', 'happily', 'sadly'];
@@ -158,50 +174,30 @@
             return `${subject} ${verb} ${adverb}.`;
         }
 
-        let abortController = null;
+        function connect() {
+            const eventSource = new EventSource('/live-updates');
 
-        async function connect() {
-            if (abortController) {
-                abortController.abort();
-            }
-
-            abortController = new AbortController();
-
-            try {
-                const response = await fetch('/live-updates', {
-                    headers: { 'SSE-Client-ID': clientID },
-                    signal: abortController.signal
-                });
-
-                if (!response.ok) {
-                    throw new Error('Connection failed');
-                }
-
+            eventSource.addEventListener('connected', (e) => {
+                connectionID = e.data;
+                document.getElementById('connectionInfo').textContent = connectionID;
                 document.getElementById('statusDot').classList.add('connected');
-                document.getElementById('statusText').textContent = `Connected (${clientID})`;
+                document.getElementById('statusText').textContent = 'Connected';
+                document.getElementById('sendBtn').disabled = false;
+                addMessage(`Connected with ID: ${connectionID}`);
+            });
 
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
+            eventSource.onmessage = (e) => {
+                addMessage(e.data);
+            };
 
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    const text = decoder.decode(value);
-                    const lines = text.split('\n');
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            addMessage(line.slice(6));
-                        }
-                    }
-                }
-            } catch (err) {
-                if (err.name !== 'AbortError') {
-                    document.getElementById('statusDot').classList.remove('connected');
-                    document.getElementById('statusText').textContent = 'Disconnected - Reconnecting...';
-                    setTimeout(connect, 2000);
-                }
-            }
+            eventSource.onerror = () => {
+                document.getElementById('statusDot').classList.remove('connected');
+                document.getElementById('statusText').textContent = 'Disconnected - Reconnecting...';
+                document.getElementById('sendBtn').disabled = true;
+                connectionID = null;
+                eventSource.close();
+                setTimeout(connect, 2000);
+            };
         }
 
         function addMessage(data) {
@@ -213,29 +209,37 @@
             messages.insertBefore(messageDiv, messages.firstChild);
         }
 
-        async function generateAndSend() {
-            const senderId = document.getElementById('senderId').value || 'anonymous';
-            const eventType = document.getElementById('eventType').value;
+        async function sendSignal() {
+            if (!connectionID) {
+                document.getElementById('lastSent').textContent = 'Error: Not connected';
+                return;
+            }
+
+            const type = document.getElementById('type').value;
             const data = randomSentence();
 
-            const event = {
-                senderId: senderId,
-                eventType: eventType,
+            const signal = {
+                type: type,
                 data: data
             };
 
             try {
-                const response = await fetch('/events', {
+                const response = await fetch(`/signals?connectionId=${connectionID}`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'SSE-Client-ID': clientID },
-                    body: JSON.stringify(event)
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(signal)
                 });
 
-                if (response.ok) {
-                    document.getElementById('lastSent').textContent = JSON.stringify(event, null, 2);
+                if (response.status === 202) {
+                    document.getElementById('lastSent').textContent = JSON.stringify(signal, null, 2);
+                } else if (response.status === 200) {
+                    const newConnectionID = await response.text();
+                    document.getElementById('lastSent').textContent = `New connection: ${newConnectionID}\n` + JSON.stringify(signal, null, 2);
                 } else {
-                    const error = await response.json();
-                    document.getElementById('lastSent').textContent = `Error: ${error.error}`;
+                    const error = await response.text();
+                    document.getElementById('lastSent').textContent = `Error: ${error}`;
                 }
             } catch (err) {
                 document.getElementById('lastSent').textContent = `Error: ${err.message}`;

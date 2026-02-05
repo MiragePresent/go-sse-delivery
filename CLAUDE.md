@@ -6,15 +6,15 @@ A Go package for simplified Server-Sent Events (SSE) message delivery.
 
 This package provides an SSE endpoint for delivering real-time events from backend to connected clients. It supports:
 
-- **Broadcast**: Send events to all connected devices
-- **Authorized delivery**: Send events only to authenticated/authorized devices
-- **Targeted delivery**: Send events to specific devices by unique identifier
+- **Broadcast**: Send events to all connected clients
+- **Authorized delivery**: Send events only to authenticated/authorized clients
+- **Targeted delivery**: Send events to specific clients by unique identifier
 
 ## Use Cases
 
 1. **Digital signage**: Kiosks displaying ads receive broadcast updates
 2. **Internal displays**: Office kiosks with unique IDs receive both public and private events
-3. **User-specific events**: Devices receive personalized events (e.g., order status) based on user context
+3. **User-specific events**: Clients receive personalized events (e.g., order status) based on user context
 
 ## Architecture
 
@@ -41,11 +41,11 @@ Events are delivered through a channel-based architecture:
 - This decouples event production from SSE delivery
 
 ```
-[External Service] --POST--> [Events Endpoint] --channel--> [SSE Handler] --SSE--> [Clients]
+[External Service] --POST--> [SignalReceiver] --ingress--> [Dispatcher] --updates--> [HttpHandler] --SSE--> [Clients]
 ```
 
 ## Roadmap
 
-- [x] Create server module with SSE endpoint and POST events endpoint
-- [x] Add server configurations (port, endpoint paths for sending/receiving events)
-- [x] Create messaging module (message structure, channels, etc.)
+- [x] Create transport package with HttpHandler (SSE) and EventsReceiver (POST events)
+- [x] Create core package (Signal, Update, Dispatcher, Handler)
+- [x] Create identity package (ClientIdResolver for SSE-Client-ID header)
