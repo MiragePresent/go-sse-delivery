@@ -1,43 +1,46 @@
 package transport
 
 import (
+	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
-	"sync"
 
 	"github.com/miragepresent/go-sse-delivery/core"
 	"github.com/miragepresent/go-sse-delivery/identity"
 )
 
+type ConnectionsUpdateHandler func(connId string, countActive int)
+
 type connection struct {
 	connectionID string
-	send         chan string
+	send         chan []byte
 }
 
 type HttpHandler struct {
-	connections           map[string]*connection
+	pool                  *ConnectionPool
 	connected             chan *connection
 	disconnected          chan *connection
 	updates               <-chan *core.Update
-	connectionIDResolver  identity.ConnectionIDResolver
 	connectionIDGenerator identity.ConnectionIDGenerator
-	mu                    sync.RWMutex
+	connectionIDResolver  identity.ConnectionIDResolver
+	onConnected           ConnectionsUpdateHandler
+	onDisconnected        ConnectionsUpdateHandler
+	onError               core.ErrorHandler
 }
 
-func NewCustomSseHandler(
-	updates <-chan *core.Update,
-	generator identity.ConnectionIDGenerator,
-	resolver identity.ConnectionIDResolver,
-) *HttpHandler {
+func NewSseHandler(updates <-chan *core.Update, options ...Option) *HttpHandler {
 	h := &HttpHandler{
-		connections:           make(map[string]*connection),
+		pool:                  NewConnectionPool(),
 		connected:             make(chan *connection),
 		disconnected:          make(chan *connection),
 		updates:               updates,
-		connectionIDGenerator: generator,
-		connectionIDResolver:  resolver,
-		mu:                    sync.RWMutex{},
+		connectionIDGenerator: identity.DefaultConnectionIDGenerator,
+		connectionIDResolver:  identity.DefaultConnectionIDResolver,
+	}
+
+	// Call option setters
+	for _, opt := range options {
+		opt(h)
 	}
 
 	go h.manageConnections()
@@ -45,35 +48,56 @@ func NewCustomSseHandler(
 	return h
 }
 
-func NewSseHandler(updates <-chan *core.Update) *HttpHandler {
-	return NewCustomSseHandler(
-		updates,
-		identity.DefaultConnectionIDGenerator,
-		identity.DefaultConnectionIDResolver,
-	)
+// Options setters
+type Option func(h *HttpHandler)
+
+func WithConnectionIdGenerator(callback identity.ConnectionIDGenerator) Option {
+	return func(h *HttpHandler) {
+		h.connectionIDGenerator = callback
+	}
+}
+func WithConnectionIdResolver(callback identity.ConnectionIDResolver) Option {
+	return func(h *HttpHandler) {
+		h.connectionIDResolver = callback
+	}
+}
+func OnConnected(callback ConnectionsUpdateHandler) Option {
+	return func(h *HttpHandler) {
+		h.onConnected = callback
+	}
+}
+func OnDisconnected(callback ConnectionsUpdateHandler) Option {
+	return func(h *HttpHandler) {
+		h.onDisconnected = callback
+	}
+}
+func OnError(callback core.ErrorHandler) Option {
+	return func(h *HttpHandler) {
+		h.onError = callback
+	}
 }
 
 func (h *HttpHandler) manageConnections() {
-
 	for {
 		select {
 		case conn := <-h.connected:
-			h.mu.Lock()
-			log.Printf("connection %s established. total connections: %d\n", conn.connectionID, len(h.connections)+1)
-			h.connections[conn.connectionID] = conn
-			h.mu.Unlock()
+			h.pool.Add(conn)
+			if h.onConnected != nil {
+				h.onConnected(conn.connectionID, h.pool.Count())
+			}
 		case disconn := <-h.disconnected:
-			h.mu.Lock()
-			log.Printf("connection %s closed. total connections: %d\n", disconn.connectionID, len(h.connections)-1)
-			delete(h.connections, disconn.connectionID)
-			close(disconn.send)
-			h.mu.Unlock()
+			h.pool.Close(disconn.connectionID)
+			if h.onDisconnected != nil {
+				h.onDisconnected(disconn.connectionID, h.pool.Count())
+			}
 		case upd := <-h.updates:
 			switch upd.Mode {
 			case core.Broadcast:
 				h.broadcastUpdate(upd)
-			case core.Targeted:
-				h.sendToTarget(upd)
+			case core.Target:
+				h.sendToConnections(upd)
+			default:
+				h.reportError(core.ErrUnknownDeliveryMode)
 			}
 		}
 	}
@@ -98,11 +122,9 @@ func (h *HttpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	log.Printf("SSE connection established: %s\n", connectionID)
-
 	conn := &connection{
 		connectionID: connectionID,
-		send:         make(chan string, 10),
+		send:         make(chan []byte, 10),
 	}
 	h.connected <- conn
 
@@ -117,42 +139,50 @@ func (h *HttpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HttpHandler) broadcastUpdate(upd *core.Update) {
-	h.mu.RLock()
-	total := len(h.connections)
-	log.Printf("broadcasting update to %d connection(s)", total)
-	pool := make([]*connection, 0, total)
-	for _, conn := range h.connections {
-		pool = append(pool, conn)
+	data, err := json.Marshal(upd.Data)
+	if err != nil {
+		h.reportError(core.SerializationError(err))
+		return
 	}
-	h.mu.RUnlock()
 
-	for _, conn := range pool {
+	connections := h.pool.All()
+	for _, conn := range connections {
 		select {
-		case conn.send <- upd.Stringify():
+		case conn.send <- data:
 		default:
-			log.Printf("connection %s is too slow (buffer full). update dropped", conn.connectionID)
+			h.reportError(core.BufferFullError(conn.connectionID))
 		}
 	}
 }
 
-func (h *HttpHandler) sendToTarget(upd *core.Update) {
+func (h *HttpHandler) sendToConnections(upd *core.Update) {
 	if len(upd.Connections) == 0 {
-		log.Printf("no connectionID specified for targeted update")
+		h.reportError(core.ErrNoConnections)
 		return
 	}
 
-	h.mu.RLock()
-	conn, ok := h.connections[upd.Connections[0]]
-	h.mu.RUnlock()
+	data, err := json.Marshal(upd.Data)
+	if err != nil {
+		h.reportError(core.SerializationError(err))
+		return
+	}
 
-	if ok {
-		select {
-		case conn.send <- upd.Stringify():
-		default:
-			log.Printf("connection %s is too slow (buffer full). update dropped", conn.connectionID)
+	for _, connID := range upd.Connections {
+		conn := h.pool.Get(connID)
+		if conn == nil {
+			h.reportError(core.ConnectionNotFoundError(connID))
+			continue
 		}
-		return
+		select {
+		case conn.send <- data:
+		default:
+			h.reportError(core.BufferFullError(conn.connectionID))
+		}
 	}
+}
 
-	log.Printf("cannot send update to connection %s. connection closed", upd.Connections[0])
+func (h *HttpHandler) reportError(err error) {
+	if h.onError != nil {
+		h.onError(err)
+	}
 }
