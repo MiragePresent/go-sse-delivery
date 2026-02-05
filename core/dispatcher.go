@@ -1,21 +1,34 @@
 package core
 
-import (
-	"log"
-)
-
 type Dispatcher struct {
 	ingress  chan *Signal
 	updates  chan *Update
 	handlers map[string]Handler
+	onError  ErrorHandler
 }
 
-func NewDispatcher(ingress chan *Signal, updates chan *Update) *Dispatcher {
-	return &Dispatcher{
+// DispatcherOption configures a Dispatcher
+type DispatcherOption func(d *Dispatcher)
+
+// OnError sets the error handler for async errors
+func OnError(handler ErrorHandler) DispatcherOption {
+	return func(d *Dispatcher) {
+		d.onError = handler
+	}
+}
+
+func NewDispatcher(ingress chan *Signal, updates chan *Update, options ...DispatcherOption) *Dispatcher {
+	d := &Dispatcher{
 		ingress:  ingress,
 		updates:  updates,
 		handlers: map[string]Handler{},
 	}
+
+	for _, opt := range options {
+		opt(d)
+	}
+
+	return d
 }
 
 func (d *Dispatcher) Register(signalType string, handler Handler) {
@@ -26,15 +39,25 @@ func (d *Dispatcher) Register(signalType string, handler Handler) {
 	d.handlers[signalType] = handler
 }
 
-func (d *Dispatcher) Run() {
+func (d *Dispatcher) Start() {
 	for signal := range d.ingress {
-		log.Printf("Dispatching signal: connectionId=%s, type=%s", signal.ConnectionID, signal.Type)
 		h := d.getHandler(signal.Type)
 		if h == nil {
-			log.Printf("no handler found for signal type %s\n", signal.Type)
+			d.reportError(NoHandlerError(signal.Type))
 			continue
 		}
-		h.Handle(signal, d.updates)
+
+		upd, err := h.Handle(signal)
+		if err != nil {
+			d.reportError(err)
+			continue
+		}
+
+		select {
+		case d.updates <- upd:
+		default:
+			d.reportError(ErrChannelFull)
+		}
 	}
 }
 
@@ -44,4 +67,10 @@ func (d *Dispatcher) getHandler(signalType string) Handler {
 	}
 
 	return nil
+}
+
+func (d *Dispatcher) reportError(err error) {
+	if d.onError != nil {
+		d.onError(err)
+	}
 }
