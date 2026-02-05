@@ -1,26 +1,26 @@
 package transport
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
 
 	"github.com/miragepresent/go-sse-delivery/core"
 	"github.com/miragepresent/go-sse-delivery/identity"
+	"github.com/miragepresent/go-sse-delivery/storage"
 )
-
-const defaultIngressTimeout = 20 * time.Millisecond
 
 // SignalReceivedHandler is called when a signal is received
 type SignalReceivedHandler func(connectionID string, signalType string)
 
 type SignalReceiver struct {
-	ingress               chan *core.Signal
+	signals               storage.Storage
 	connectionIDResolver  identity.ConnectionIDResolver
 	connectionIDGenerator identity.ConnectionIDGenerator
 	onSignalReceived      SignalReceivedHandler
 	onError               core.ErrorHandler
-	ingressTimeout        time.Duration
+	pushTimeout           time.Duration
 }
 
 // SignalReceiverOption configures a SignalReceiver
@@ -40,10 +40,10 @@ func OnSignalError(handler core.ErrorHandler) SignalReceiverOption {
 	}
 }
 
-// WithIngressTimeout sets the timeout for sending signals to the ingress channel
-func WithIngressTimeout(timeout time.Duration) SignalReceiverOption {
+// WithPushTimeout sets the timeout for pushing signals to storage
+func WithPushTimeout(timeout time.Duration) SignalReceiverOption {
 	return func(sr *SignalReceiver) {
-		sr.ingressTimeout = timeout
+		sr.pushTimeout = timeout
 	}
 }
 
@@ -61,12 +61,12 @@ func WithSignalConnectionIDResolver(resolver identity.ConnectionIDResolver) Sign
 	}
 }
 
-func NewSignalReceiver(ingress chan *core.Signal, options ...SignalReceiverOption) *SignalReceiver {
+func NewSignalReceiver(signals storage.Storage, options ...SignalReceiverOption) *SignalReceiver {
 	sr := &SignalReceiver{
-		ingress:               ingress,
+		signals:               signals,
 		connectionIDGenerator: identity.DefaultConnectionIDGenerator,
 		connectionIDResolver:  identity.DefaultConnectionIDResolver,
-		ingressTimeout:        defaultIngressTimeout,
+		pushTimeout:           5 * time.Second,
 	}
 
 	for _, opt := range options {
@@ -87,44 +87,25 @@ func (sr *SignalReceiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	connectionID := sr.connectionIDResolver(r)
 	if connectionID == "" {
 		connectionID = sr.connectionIDGenerator()
-		signal.ConnectionID = connectionID
-
-		if sr.onSignalReceived != nil {
-			sr.onSignalReceived(signal.ConnectionID, signal.Type)
-		}
-
-		if !sr.sendSignal(&signal) {
-			http.Error(w, "Server busy", http.StatusServiceUnavailable)
-			return
-		}
-
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(connectionID))
-		return
 	}
-
 	signal.ConnectionID = connectionID
 
 	if sr.onSignalReceived != nil {
 		sr.onSignalReceived(signal.ConnectionID, signal.Type)
 	}
 
-	if !sr.sendSignal(&signal) {
+	ctx, cancel := context.WithTimeout(r.Context(), sr.pushTimeout)
+	defer cancel()
+
+	if err := sr.signals.Push(ctx, &signal); err != nil {
+		sr.reportError(err)
 		http.Error(w, "Server busy", http.StatusServiceUnavailable)
 		return
 	}
-	w.WriteHeader(http.StatusAccepted)
-}
 
-func (sr *SignalReceiver) sendSignal(signal *core.Signal) bool {
-	select {
-	case sr.ingress <- signal:
-		return true
-	case <-time.After(sr.ingressTimeout):
-		sr.reportError(core.ErrIngressTimeout)
-		return false
-	}
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusAccepted)
+	w.Write([]byte(connectionID))
 }
 
 func (sr *SignalReceiver) reportError(err error) {

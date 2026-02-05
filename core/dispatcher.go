@@ -1,8 +1,14 @@
 package core
 
+import (
+	"context"
+
+	"github.com/miragepresent/go-sse-delivery/storage"
+)
+
 type Dispatcher struct {
-	ingress  chan *Signal
-	updates  chan *Update
+	signals  storage.Storage
+	updates  storage.Storage
 	handlers map[string]Handler
 	onError  ErrorHandler
 }
@@ -17,9 +23,9 @@ func OnError(handler ErrorHandler) DispatcherOption {
 	}
 }
 
-func NewDispatcher(ingress chan *Signal, updates chan *Update, options ...DispatcherOption) *Dispatcher {
+func NewDispatcher(signals, updates storage.Storage, options ...DispatcherOption) *Dispatcher {
 	d := &Dispatcher{
-		ingress:  ingress,
+		signals:  signals,
 		updates:  updates,
 		handlers: map[string]Handler{},
 	}
@@ -39,25 +45,63 @@ func (d *Dispatcher) Register(signalType string, handler Handler) {
 	d.handlers[signalType] = handler
 }
 
-func (d *Dispatcher) Start() {
-	for signal := range d.ingress {
-		h := d.getHandler(signal.Type)
-		if h == nil {
-			d.reportError(NoHandlerError(signal.Type))
-			continue
+func (d *Dispatcher) Start(ctx context.Context) error {
+	// Restore unprocessed signals first
+	restored, err := d.signals.Restore(ctx)
+	if err != nil {
+		d.reportError(err)
+	} else {
+		for _, msg := range restored {
+			signal, ok := msg.(*Signal)
+			if !ok {
+				continue
+			}
+			d.processSignal(ctx, signal)
 		}
+	}
 
-		upd, err := h.Handle(signal)
-		if err != nil {
-			d.reportError(err)
-			continue
-		}
+	// Subscribe to new signals
+	sub, err := d.signals.Subscribe(ctx, storage.SubscribeOptions{
+		ConsumerID: "dispatcher",
+	})
+	if err != nil {
+		return err
+	}
+	defer sub.Close()
 
+	for {
 		select {
-		case d.updates <- upd:
-		default:
-			d.reportError(ErrChannelFull)
+		case <-ctx.Done():
+			return ctx.Err()
+		case msg, ok := <-sub.Messages():
+			if !ok {
+				return nil
+			}
+			signal, ok := msg.(*Signal)
+			if !ok {
+				continue
+			}
+			d.processSignal(ctx, signal)
+			sub.Ack(msg.ID())
 		}
+	}
+}
+
+func (d *Dispatcher) processSignal(ctx context.Context, signal *Signal) {
+	h := d.getHandler(signal.Type)
+	if h == nil {
+		d.reportError(NoHandlerError(signal.Type))
+		return
+	}
+
+	upd, err := h.Handle(signal)
+	if err != nil {
+		d.reportError(err)
+		return
+	}
+
+	if err := d.updates.Push(ctx, upd); err != nil {
+		d.reportError(err)
 	}
 }
 
